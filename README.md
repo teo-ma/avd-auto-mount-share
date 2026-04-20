@@ -1,47 +1,47 @@
-# AVD Auto-Mount SMB Share (Logon-Triggered)
+# AVD 登录自动挂载 SMB 共享盘
 
-A one-shot PowerShell installer that configures any Windows VM (AVD Session Host / regular Windows 10/11) so that every user gets a persistent SMB drive letter automatically mounted **on every logon**, even if the VM reboots and whatever user logs in.
+一个开箱即用的 PowerShell 安装脚本，在任意 Windows 10/11（AVD Session Host 或普通 Windows 桌面）上配置：**任何用户登录时，自动把指定 SMB 共享挂载为固定盘符**（默认 `I:`），重启和切换用户后持续有效。
 
-Built and battle-tested against Azure Virtual Desktop on **Azure China (21Vianet)** with Windows 11 Enterprise session hosts joined to AD DS, authenticating to a third-party SMB server with per-user credentials (`cmdkey`).
-
----
-
-## Features
-
-- ✅ **Logon trigger** — mounts for any user in `BUILTIN\Users` on logon (no hard-coded username).
-- ✅ **Fully parameterized** — pass `SmbPath` / `SmbUser` / `SmbPass` at run time; no secrets in the script.
-- ✅ **CJK / Chinese UNC path support** — bat file written in GBK (code page 936) with CRLF line endings.
-- ✅ **Idempotent** — cleans stale `HKCU\Network\<drive>` entries and prior `net use` mappings before reconnecting.
-- ✅ **Remote-deploy friendly** — runs end-to-end via `az vm run-command` (SYSTEM context) with no polluting SYSTEM-scope mappings.
-- ✅ **AMSI-safe** — avoids `Register-ScheduledTask` / `[Convert]::FromBase64String` that some Defender policies silently block in run-command sessions; uses `schtasks.exe + XML` instead.
-- ✅ **Pure ASCII source** — the .ps1 file itself contains zero non-ASCII bytes, which avoids PowerShell 5.1 GBK-vs-UTF8-BOM parsing traps when piped through run-command.
+在 **Azure China（21Vianet）** 的 AVD 环境下实测通过，Windows 11 企业版会话主机加入本地 AD DS，连接到第三方 SMB 服务器，使用 `cmdkey` 缓存每用户凭据。
 
 ---
 
-## What gets installed on the target VM
+## 功能特性
 
-| Artifact | Purpose |
+- ✅ **登录触发**：计划任务在 `BUILTIN\Users` 组的任意用户登录时触发，不绑定具体用户名。
+- ✅ **完全参数化**：运行时传入 `SmbPath` / `SmbUser` / `SmbPass`，脚本本身不包含任何凭据或路径。
+- ✅ **支持中文 UNC 路径**：生成的 .bat 使用 GBK（代码页 936）+ CRLF 换行，中文路径不乱码。
+- ✅ **幂等可重入**：挂载前清理历史 `HKCU\Network\<盘符>` 和 `net use` 残留，避免"断开的网络驱动器"。
+- ✅ **远程部署友好**：通过 `az vm run-command` 在 SYSTEM 上下文完整执行，且**不会污染 SYSTEM 级盘符命名空间**。
+- ✅ **绕过 AMSI 拦截**：使用 `schtasks.exe + XML` 注册任务，避免部分 Defender 策略静默拦截 `Register-ScheduledTask` / `[Convert]::FromBase64String`。
+- ✅ **源码纯 ASCII**：脚本本体 0 个非 ASCII 字节，消除 PowerShell 5.1 把无 BOM 的 UTF-8 按 GBK 解析的隐患。
+
+---
+
+## 目标机器上会生成的内容
+
+| 产物 | 作用 |
 |---|---|
-| `C:\Scripts\mount-share-<L>.bat` | GBK+CRLF batch: clears stale mapping, re-caches creds, `net use`. |
-| `C:\Scripts\AutoMountSharedDrive_<L>.xml` | UTF-16-LE-BOM scheduled-task definition. |
-| Scheduled Task `AutoMountSharedDrive_<L>` | Triggers on **any** user logon (`BUILTIN\Users`, LeastPrivilege). |
+| `C:\Scripts\mount-share-<L>.bat` | GBK + CRLF 格式的批处理：清理残留 → 缓存凭据 → `net use`。 |
+| `C:\Scripts\AutoMountSharedDrive_<L>.xml` | UTF-16-LE-BOM 的计划任务定义文件。 |
+| 计划任务 `AutoMountSharedDrive_<L>` | 登录触发，运行身份 `BUILTIN\Users`，`LeastPrivilege`。 |
 
-`<L>` = drive letter, default `I`.
-
----
-
-## Prerequisites
-
-- Windows 10/11 or Windows Server with PowerShell 5.1+
-- Local Administrator rights on the target VM
-- Network reachability to the SMB server on TCP 445
-- (Optional) Azure CLI installed and `az login`ed for remote deployment
+`<L>` = 盘符，默认 `I`。
 
 ---
 
-## One-shot Usage
+## 前置条件
 
-### 1. Run locally on a session host (as Administrator)
+- Windows 10 / 11 或 Windows Server，PowerShell 5.1+
+- 目标机器的本地管理员权限
+- 能连通 SMB 服务器的 TCP 445
+- （远程部署场景）已安装 Azure CLI 并 `az login`
+
+---
+
+## 一键部署用法
+
+### 1. 在 Session Host 本机运行（管理员 PowerShell）
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Install-AutoMountShare.ps1 `
@@ -50,7 +50,7 @@ powershell -ExecutionPolicy Bypass -File .\Install-AutoMountShare.ps1 `
     -SmbPass 'somePassword'
 ```
 
-CJK (Chinese) paths are supported directly at the parameter — the installer encodes the generated batch file in GBK:
+中文路径可直接作为参数传入（脚本自动以 GBK 写入 .bat）：
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Install-AutoMountShare.ps1 `
@@ -58,7 +58,7 @@ powershell -ExecutionPolicy Bypass -File .\Install-AutoMountShare.ps1 `
     -SmbUser 'A0072439' -SmbPass 'p@ssw0rd'
 ```
 
-### 2. Remote deploy to a single Azure VM
+### 2. 远程部署到单台 Azure VM
 
 ```bash
 az vm run-command invoke \
@@ -71,7 +71,7 @@ az vm run-command invoke \
     -o tsv --query "value[0].message"
 ```
 
-### 3. Batch deploy to multiple session hosts with per-user credentials
+### 3. 批量部署多台 Session Host（每台不同账号）
 
 ```bash
 declare -A VM_USER=(
@@ -96,75 +96,77 @@ done
 
 ---
 
-## Parameters
+## 参数说明
 
-| Name | Required | Default | Description |
+| 名称 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `-SmbPath`     | ✅ | —   | Full UNC path, e.g. `\\server\share\folder` (CJK OK). |
-| `-SmbUser`     | ✅ | —   | SMB username. |
-| `-SmbPass`     | ✅ | —   | SMB password. |
-| `-DriveLetter` |    | `I` | Single letter A–Z. |
-| `-TaskName`    |    | `AutoMountSharedDrive_<L>` | Scheduled-task name. |
+| `-SmbPath`     | ✅ | —   | 完整 UNC 路径，如 `\\server\share\folder`（支持中文）。 |
+| `-SmbUser`     | ✅ | —   | SMB 用户名。 |
+| `-SmbPass`     | ✅ | —   | SMB 密码。 |
+| `-DriveLetter` |    | `I` | 单个字母 A–Z。 |
+| `-TaskName`    |    | `AutoMountSharedDrive_<盘符>` | 计划任务名。 |
+
+脚本会自动从 `SmbPath` 的前两段解析出 SMB 服务器主机名，用于 `cmdkey /add`。
 
 ---
 
-## Verify after install
+## 安装后验证
 
 ```powershell
-# Show scheduled task
+# 查看计划任务
 schtasks /Query /TN AutoMountSharedDrive_I /FO LIST
 
-# Trigger manually (runs as whoever is currently logged in)
+# 手动触发（作为当前登录用户执行）
 schtasks /Run /TN AutoMountSharedDrive_I
 
-# Inside the logged-in user's session, confirm
+# 在用户会话中确认
 net use
 dir I:\
 ```
 
-For a fresh effect, **log off and log back in** — the `Users` logon trigger mounts the drive in the user's own session. Note that an elevated admin PowerShell can't see user-session mappings due to UAC token split; verify with an ordinary Explorer window.
+**推荐做法**：注销后重新登录 —— 任务会在用户自己的会话里挂载盘符。注意：由于 UAC 令牌拆分，**管理员 PowerShell 里看不到普通用户会话的映射**，应在资源管理器中确认。
 
 ---
 
-## Uninstall
+## 卸载
 
 ```powershell
 schtasks /Delete /TN AutoMountSharedDrive_I /F
 Remove-Item C:\Scripts\mount-share-I.bat, C:\Scripts\AutoMountSharedDrive_I.xml -Force
-net use I: /delete /y        # remove current mapping (per user)
-reg delete HKCU\Network\I /f # remove persistent mapping record
-cmdkey /delete:<smbserver>    # remove cached credential
+net use I: /delete /y          # 移除当前映射（每用户）
+reg delete HKCU\Network\I /f   # 移除持久化映射记录
+cmdkey /delete:<smbserver>     # 移除缓存凭据
 ```
 
 ---
 
-## Troubleshooting
+## 常见问题
 
-| Symptom | Cause | Fix |
+| 现象 | 原因 | 解决方案 |
 |---|---|---|
-| Drive shows **"Disconnected network drive"** in Explorer | Stale `HKCU\Network\<L>` + no active mount | The installed task auto-fixes on next logon; or run `schtasks /Run /TN AutoMountSharedDrive_I`. |
-| `System error 85 - Local device name already in use` | Drive letter is held by SYSTEM (e.g. left over from an elevated test) | `Remove-SmbMapping -LocalPath I: -Force -UpdateProfile` (as admin) then logoff/logon. |
-| Task shows `LastResult=2` with no log | Early bat parse failure (e.g. LF-only line endings) | This installer already writes CRLF; re-run installer to refresh bat. |
-| Ping to SMB server fails but mount works | ICMP blocked, 445 open — normal. |  |
-| Chinese path displays as `????` or garbled in logs | Viewer used wrong codepage — the .bat itself is correct GBK | Read the log with `[Text.Encoding]::GetEncoding(936)`. |
+| 资源管理器显示**"断开的网络驱动器"** | `HKCU\Network\<L>` 有历史持久化项，但当前会话未挂载 | 任务会在下次登录自动修复；也可运行 `schtasks /Run /TN AutoMountSharedDrive_I`。 |
+| `发生系统错误 85 - 本地设备名已在使用中` | 盘符被 SYSTEM 或管理员会话占用 | 以管理员身份执行 `Remove-SmbMapping -LocalPath I: -Force -UpdateProfile`，然后注销重登。 |
+| 任务显示 `上次结果=2` 且无日志 | .bat 文件早期解析失败（例如 LF-only 换行） | 本脚本已写入 CRLF；重新运行安装脚本刷新 .bat 即可。 |
+| Ping SMB 服务器失败但挂载成功 | ICMP 被防火墙拦截，445 端口正常——属于正常现象。 | — |
+| 日志里中文显示为 `????` / 乱码 | 查看工具用了错误的代码页 | 用 `[Text.Encoding]::GetEncoding(936)` 读取日志文件。 |
 
-Enable diagnostic logging temporarily by editing `C:\Scripts\mount-share-I.bat` to redirect each step's output into `C:\Users\Public\AutoMountLogs\mount-%USERNAME%.log` and re-run `schtasks /Run`.
+如需定位问题，可临时编辑 `C:\Scripts\mount-share-I.bat`，把每一步输出追加到 `C:\Users\Public\AutoMountLogs\mount-%USERNAME%.log`，再 `schtasks /Run` 触发。
 
 ---
 
-## Design notes
+## 设计说明
 
-1. **Why `schtasks + XML` instead of `Register-ScheduledTask`?**
-   In some hardened Windows images (notably Azure-managed AVD images running under the RunCommand extension), the `ScheduledTasks` PowerShell module is blocked by AMSI, silently returning no error and no registered task. `schtasks.exe` with a pre-built XML is universally reliable.
+1. **为什么用 `schtasks + XML` 而不是 `Register-ScheduledTask`？**
+   某些加固过的 Windows 镜像（特别是 Azure AVD 镜像在 RunCommand 扩展里执行时），`ScheduledTasks` 模块会被 AMSI 静默拦截，既不报错也不会真的注册任务。`schtasks.exe + 预生成 XML` 的路径稳定可靠。
 
-2. **Why don't we pre-mount during install?**
-   The installer runs under SYSTEM (via run-command) or an elevated admin. A `net use I: …` from that context pins the letter in the *global device namespace*, making later user-session mounts fail with error 85. We only write the bat + register the task; the mount happens at user logon.
+2. **为什么安装阶段不预挂载一次？**
+   安装脚本运行在 SYSTEM（通过 run-command）或提升的管理员上下文。在这些上下文里 `net use I: ...` 会把盘符占到**全局设备命名空间**，导致后续用户会话挂载时报错 85。所以脚本只写入 .bat + 注册任务，真正的挂载发生在**用户登录时**。
 
-3. **Why re-derive `SmbServer` from the UNC path?**
-   `cmdkey /add:<server>` needs the exact hostname; deriving it from `\\server\share\…` ensures `cmdkey` and `net use` agree.
+3. **为什么要从 UNC 解析出 `SmbServer`？**
+   `cmdkey /add:<主机>` 必须和 `net use` 指向完全一致的主机名；从 `\\server\share\…` 自动推导出第一段，保证两者一致。
 
-4. **Why write the bat in GBK, not UTF-8?**
-   Legacy `cmd.exe` on Chinese Windows parses .bat files in the OEM codepage (936 / GBK by default on zh-CN). UTF-8 without BOM causes mis-decoding; UTF-8 with BOM breaks the very first `@echo off` line.
+4. **为什么 .bat 写成 GBK 而不是 UTF-8？**
+   老版本 `cmd.exe` 在中文 Windows 上按 OEM 代码页（`zh-CN` 默认 936 / GBK）解析 .bat。无 BOM 的 UTF-8 会乱码；带 BOM 的 UTF-8 会破坏 `@echo off` 第一行。
 
 ---
 
